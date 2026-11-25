@@ -1,0 +1,25 @@
+db_private_ip: 10.10.2.10
+
+# parâmetros da pipeline (sobrescritos com -e)
+app_tag: ""              # obrigatório
+mongo_tag: "8.0.17"      # mesma versão do compose.yaml
+update_os: false
+force_pull: false
+extra_packages_csv: ""
+
+base_packages: [ca-certificates, curl, gnupg, jq, htop, net-tools, python3-requests]
+extra_packages: "{{ extra_packages_csv.split(',') | map('trim') | reject('equalto', '') | list }}"
+
+frontend_image: "{{ lookup('ansible.builtin.env', 'FRONTEND_IMAGE') }}"
+api_image: "{{ lookup('ansible.builtin.env', 'API_IMAGE') }}"
+registry_token: "{{ lookup('ansible.builtin.env', 'REGISTRY_TOKEN', default='') }}"
+
+mongo_db: kubeshop
+mongo_app_user: kubeshop_app
+mongo_root_password: "{{ lookup('ansible.builtin.env', 'MONGO_ROOT_PASSWORD') }}"
+mongo_app_password: "{{ lookup('ansible.builtin.env', 'MONGO_APP_PASSWORD') }}"
+mongo_uri: "mongodb://{{ mongo_app_user }}:{{ mongo_app_password | urlencode }}@{{ db_private_ip }}:27017/{{ mongo_db }}?authSource={{ mongo_db }}"
+
+# variável lida por apps/backend/src/config.js (Passo 3.1)
+api_mongo_env_var: MONGODB_URI
+api_env: "{{ {api_mongo_env_var: mongo_uri, 'NODE_ENV': 'production'} }}"
