@@ -1,0 +1,5 @@
+*.tfstate*
+.terraform/
+*.tfplan
+ansible/inventory/hosts.ini
+.env
