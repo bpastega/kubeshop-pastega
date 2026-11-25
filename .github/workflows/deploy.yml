@@ -1,0 +1,159 @@
+# .github/workflows/deploy.yml
+name: deploy
+on:
+  workflow_dispatch:
+    inputs:
+      environment:    { type: choice, options: [dev, homolog, prod], default: dev }
+      instance_name:  { type: string, default: kubeshop }
+      app_vm_size:    { type: choice, options: [Standard_B2als_v2, Standard_B2as_v2, Standard_B2ats_v2], default: Standard_B2als_v2 }
+      db_vm_size:     { type: choice, options: [Standard_B2als_v2, Standard_B2as_v2], default: Standard_B2als_v2 }
+      app_tag:        { type: string, required: true }
+      mongo_tag:      { type: string, default: "8.0.17" }
+      update_os:      { type: boolean, default: false }
+      force_pull:     { type: boolean, default: false }
+      extra_packages: { type: string, default: "" }
+      plan_only:      { type: boolean, default: false }
+
+permissions:
+  id-token: write   # OIDC
+  contents: read
+
+concurrency:
+  group: infra-${{ inputs.environment }}
+  cancel-in-progress: false
+
+env:
+  ARM_USE_OIDC: "true"
+  ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  TF_IN_AUTOMATION: "true"
+  TF_VAR_environment: ${{ inputs.environment }}
+  TF_VAR_instance_name: ${{ inputs.instance_name }}
+  TF_VAR_app_vm_size: ${{ inputs.app_vm_size }}
+  TF_VAR_db_vm_size: ${{ inputs.db_vm_size }}
+  # homolog vai para outra região, porque a cota de chilecentral é toda do dev
+  TF_VAR_location: ${{ inputs.environment == 'homolog' && vars.AZURE_LOCATION_HOMOLOG || vars.AZURE_LOCATION }}
+  TF_VAR_ssh_public_key: ${{ vars.SSH_PUBLIC_KEY }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    defaults:
+      run:
+        shell: bash   # bash -e -o pipefail: qualquer erro interrompe
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login no Azure (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.17.2   # mesma versão testada no Cloud Shell
+          terraform_wrapper: false
+
+      - name: Terraform fmt + init + validate
+        working-directory: terraform
+        run: |
+          terraform fmt -check -recursive
+          terraform init -input=false \
+            -backend-config="resource_group_name=${{ vars.TFSTATE_RG }}" \
+            -backend-config="storage_account_name=${{ vars.TFSTATE_SA }}" \
+            -backend-config="container_name=${{ vars.TFSTATE_CONTAINER }}" \
+            -backend-config="key=kubeshop-${{ inputs.environment }}.tfstate"
+          terraform validate
+
+      - name: Terraform plan
+        id: plan
+        working-directory: terraform
+        run: |
+          set +e
+          terraform plan -input=false -no-color -out=tfplan -detailed-exitcode | tee plan.txt
+          code=${PIPESTATUS[0]}
+          set -e
+          [ "$code" -eq 1 ] && { echo "::error::terraform plan falhou"; exit 1; }
+          echo "changes=$([ "$code" -eq 2 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          { echo '### Terraform plan'; echo '```'; grep -E '^Plan:|No changes' plan.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Terraform apply
+        if: steps.plan.outputs.changes == 'true' && !inputs.plan_only
+        working-directory: terraform
+        run: terraform apply -input=false -no-color tfplan
+
+      - name: Ler outputs do Terraform
+        if: ${{ !inputs.plan_only }}
+        id: tf
+        working-directory: terraform
+        run: |
+          echo "app_ip=$(terraform output -raw app_public_ip)" >> "$GITHUB_OUTPUT"
+          echo "app_fqdn=$(terraform output -raw app_fqdn)" >> "$GITHUB_OUTPUT"
+          echo "rg=$(terraform output -raw resource_group)" >> "$GITHUB_OUTPUT"
+          echo "nsg=$(terraform output -raw nsg_app_name)" >> "$GITHUB_OUTPUT"
+
+      - name: Liberar SSH temporário para o IP deste runner
+        if: ${{ !inputs.plan_only }}
+        id: fw
+        run: |
+          RUNNER_IP=$(curl -s https://api.ipify.org)
+          az network nsg rule create -g "${{ steps.tf.outputs.rg }}" \
+            --nsg-name "${{ steps.tf.outputs.nsg }}" -n "gh-runner-${{ github.run_id }}" \
+            --priority 200 --direction Inbound --access Allow --protocol Tcp \
+            --source-address-prefixes "$RUNNER_IP/32" --destination-port-ranges 22 -o none
+          for i in $(seq 1 30); do nc -z -w 3 "${{ steps.tf.outputs.app_ip }}" 22 && break; sleep 10; done
+
+      - name: Carregar chave SSH
+        if: ${{ !inputs.plan_only }}
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Instalar Ansible e gerar inventário
+        if: ${{ !inputs.plan_only }}
+        working-directory: ansible
+        env:
+          APP_IP: ${{ steps.tf.outputs.app_ip }}
+        run: |
+          pipx install --include-deps ansible
+          mkdir -p inventory
+          cat > inventory/hosts.ini <<EOF
+          [app]
+          vm-app ansible_host=${APP_IP}
+          [db]
+          vm-db ansible_host=10.10.2.10 ansible_ssh_common_args='-o ProxyJump=azureuser@${APP_IP} -o StrictHostKeyChecking=accept-new'
+          [all:vars]
+          ansible_user=azureuser
+          EOF
+
+      - name: Ansible — configurar e atualizar
+        if: ${{ !inputs.plan_only }}
+        working-directory: ansible
+        env:
+          MONGO_ROOT_PASSWORD: ${{ secrets.MONGO_ROOT_PASSWORD }}
+          MONGO_APP_PASSWORD: ${{ secrets.MONGO_APP_PASSWORD }}
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          FRONTEND_IMAGE: ${{ vars.FRONTEND_IMAGE }}
+          API_IMAGE: ${{ vars.API_IMAGE }}
+          APP_TAG: ${{ inputs.app_tag }}
+          MONGO_TAG: ${{ inputs.mongo_tag }}
+          UPDATE_OS: ${{ inputs.update_os }}
+          FORCE_PULL: ${{ inputs.force_pull }}
+          EXTRA_PACKAGES: ${{ inputs.extra_packages }}
+        run: |
+          ansible-playbook site.yml \
+            -e "app_tag=$APP_TAG" -e "mongo_tag=$MONGO_TAG" \
+            -e "update_os=$UPDATE_OS" -e "force_pull=$FORCE_PULL" \
+            -e "extra_packages_csv=$EXTRA_PACKAGES" | tee ansible.log
+          { echo '### Ansible recap'; echo '```'; sed -n '/PLAY RECAP/,$p' ansible.log; echo '```';
+            echo "Loja: http://${{ steps.tf.outputs.app_fqdn }}"; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fechar SSH temporário
+        if: always() && steps.fw.outcome != 'skipped'
+        run: |
+          az network nsg rule delete -g "${{ steps.tf.outputs.rg }}" \
+            --nsg-name "${{ steps.tf.outputs.nsg }}" -n "gh-runner-${{ github.run_id }}" || true
