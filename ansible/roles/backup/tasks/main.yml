@@ -1,0 +1,13 @@
+# ansible/roles/backup/tasks/main.yml
+- name: Script de backup
+  ansible.builtin.copy:
+    src: kubeshop-backup.sh
+    dest: /usr/local/bin/kubeshop-backup.sh
+    mode: "0750"
+
+- name: Backup local diário às 03:00 UTC
+  ansible.builtin.cron:
+    name: kubeshop-backup
+    minute: "0"
+    hour: "3"
+    job: /usr/local/bin/kubeshop-backup.sh >> /var/log/kubeshop-backup.log 2>&1

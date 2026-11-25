@@ -1,0 +1,19 @@
+# ansible/ops/logs.yml — últimas linhas de log (Passo 7)
+- name: Últimas linhas de log
+  hosts: all
+  become: true
+  vars:
+    by_host:
+      app: [frontend, api]
+      db: [mongo]
+  tasks:
+    - name: docker logs --tail 200
+      ansible.builtin.command: "docker logs --tail 200 {{ item }}"
+      loop: "{{ by_host[group_names[0]] }}"
+      when: service == 'all' or service == item
+      register: logs
+      changed_when: false
+    - ansible.builtin.debug:
+        msg: "{{ item.stdout_lines + item.stderr_lines }}"
+      loop: "{{ logs.results | selectattr('stdout', 'defined') | list }}"
+      loop_control: { label: "{{ item.item }}" }

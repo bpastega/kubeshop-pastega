@@ -1,0 +1,35 @@
+# ansible/roles/mongodb/tasks/main.yml
+- name: Pasta de scripts de inicialização
+  ansible.builtin.file:
+    path: /opt/kubeshop/mongo-init
+    state: directory
+    mode: "0755"
+
+- name: Script que cria o usuário da aplicação
+  ansible.builtin.copy:
+    src: init-user.js
+    dest: /opt/kubeshop/mongo-init/init-user.js
+    mode: "0644"
+
+- name: Contêiner MongoDB
+  community.docker.docker_container:
+    name: mongo
+    image: "mongo:{{ mongo_tag }}"
+    pull: "{{ 'always' if force_pull | bool else 'missing' }}"
+    restart_policy: unless-stopped
+    published_ports:
+      - "{{ db_private_ip }}:27017:27017"   # só no IP privado
+    volumes:
+      - /data/mongo/db:/data/db
+      - /opt/kubeshop/mongo-init:/docker-entrypoint-initdb.d:ro
+    env:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: "{{ mongo_root_password }}"
+      MONGO_APP_DB: "{{ mongo_db }}"
+      MONGO_APP_USER: "{{ mongo_app_user }}"
+      MONGO_APP_PASSWORD: "{{ mongo_app_password }}"
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      retries: 5
+  no_log: true   # impede que as senhas apareçam no log

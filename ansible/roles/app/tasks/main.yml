@@ -1,0 +1,46 @@
+# ansible/roles/app/tasks/main.yml
+- name: Rede Docker da aplicação
+  community.docker.docker_network:
+    name: kubeshop
+
+- name: Login no registro (só se as imagens forem privadas)
+  community.docker.docker_login:
+    registry_url: ghcr.io
+    username: bpastega   # dono do fork que publica as imagens
+    password: "{{ registry_token }}"
+  when: registry_token | length > 0
+  no_log: true
+
+- name: Esperar o MongoDB responder a partir desta VM (ordem de inicialização)
+  ansible.builtin.wait_for:
+    host: "{{ db_private_ip }}"
+    port: 27017
+    timeout: 180
+
+- name: Contêiner da API (porta não publicada)
+  community.docker.docker_container:
+    name: api
+    image: "{{ api_image }}:{{ app_tag }}"
+    pull: "{{ 'always' if force_pull | bool else 'missing' }}"
+    restart_policy: unless-stopped
+    networks: [{ name: kubeshop }]
+    env: "{{ api_env }}"
+  no_log: true
+
+- name: Contêiner do frontend (Nginx, porta 80 pública)
+  community.docker.docker_container:
+    name: frontend
+    image: "{{ frontend_image }}:{{ app_tag }}"
+    pull: "{{ 'always' if force_pull | bool else 'missing' }}"
+    restart_policy: unless-stopped
+    networks: [{ name: kubeshop }]
+    published_ports: ["80:8080"]   # o Nginx do frontend escuta 8080
+
+- name: Verificar saúde (API + conexão com o banco)
+  ansible.builtin.uri:
+    url: http://localhost/api/health/ready
+    status_code: 200
+  register: health
+  retries: 20
+  delay: 6
+  until: health.status == 200

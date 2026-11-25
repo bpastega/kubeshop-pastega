@@ -1,0 +1,13 @@
+# ansible/ops/restart.yml — reinicia contêineres (Passo 7)
+- name: Reiniciar contêineres
+  hosts: all
+  become: true
+  vars:
+    by_host:
+      app: [frontend, api]
+      db: [mongo]
+  tasks:
+    - name: Reiniciar
+      ansible.builtin.command: "docker restart {{ item }}"
+      loop: "{{ by_host[group_names[0]] }}"
+      when: service == 'all' or service == item

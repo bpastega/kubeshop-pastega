@@ -1,0 +1,14 @@
+# ansible/ops/backup.yml — gera o dump e traz para o runner (Passo 6)
+- name: Backup do MongoDB
+  hosts: db
+  become: true
+  tasks:
+    - name: Gerar dump (usa o mesmo script do cron)
+      ansible.builtin.command: /usr/local/bin/kubeshop-backup.sh
+      register: dump
+
+    - name: Trazer o arquivo para o runner
+      ansible.builtin.fetch:
+        src: "{{ dump.stdout }}"
+        dest: "{{ playbook_dir }}/../out/"
+        flat: true

@@ -1,0 +1,36 @@
+# ansible/roles/data_disk/tasks/main.yml
+- name: Localizar o disco de dados (LUN 0)
+  ansible.builtin.shell: |
+    for p in /dev/disk/azure/data/by-lun/0 /dev/disk/azure/scsi1/lun0; do
+      [ -e "$p" ] && readlink -f "$p" && exit 0
+    done
+    exit 1
+  register: lun0
+  changed_when: false
+
+- name: Criar ext4 (não formata se já existir sistema de arquivos)
+  community.general.filesystem:
+    fstype: ext4
+    dev: "{{ lun0.stdout }}"
+
+- name: Obter UUID do disco
+  ansible.builtin.command: "blkid -s UUID -o value {{ lun0.stdout }}"
+  register: disk_uuid
+  changed_when: false
+
+- name: Montar em /data (persistente, nofail)
+  ansible.posix.mount:
+    path: /data
+    src: "UUID={{ disk_uuid.stdout }}"
+    fstype: ext4
+    opts: defaults,nofail
+    state: mounted
+
+- name: Diretórios do MongoDB e dos backups
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "999"   # usuário mongodb da imagem oficial
+    group: "999"
+    mode: "0750"
+  loop: [/data/mongo/db, /data/backups]

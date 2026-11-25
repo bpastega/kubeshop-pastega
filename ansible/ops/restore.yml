@@ -1,0 +1,22 @@
+# ansible/ops/restore.yml — restaura um dump vindo do Blob (Passo 6)
+- name: Restaurar o MongoDB a partir de um backup
+  hosts: db
+  become: true
+  tasks:
+    - name: Enviar o arquivo para a VM
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../out/restore.archive.gz"
+        dest: /data/backups/restore.archive.gz
+        mode: "0600"
+
+    - name: Restaurar (substitui as coleções do banco da aplicação)
+      ansible.builtin.shell: >
+        docker exec -i mongo sh -c
+        'mongorestore -u root -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin
+        --archive --gzip --drop --nsInclude="$MONGO_APP_DB.*"'
+        < /data/backups/restore.archive.gz
+
+    - name: Remover o arquivo temporário
+      ansible.builtin.file:
+        path: /data/backups/restore.archive.gz
+        state: absent

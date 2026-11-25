@@ -1,0 +1,29 @@
+# ansible/roles/os_updates/tasks/main.yml
+- name: Atualizar índice do apt (não altera o sistema)
+  ansible.builtin.apt:
+    update_cache: true
+  changed_when: false
+
+- name: Listar atualizações disponíveis (relatório no log)
+  ansible.builtin.command: apt list --upgradable
+  register: upgradable
+  changed_when: false
+
+- name: Mostrar quantas atualizações existem
+  ansible.builtin.debug:
+    msg: "{{ (upgradable.stdout_lines | length) - 1 }} pacote(s) com atualização"
+
+- name: Aplicar atualizações do SO
+  ansible.builtin.apt:
+    upgrade: dist
+  when: update_os | bool
+
+- name: Verificar se o SO pede reinício
+  ansible.builtin.stat:
+    path: /var/run/reboot-required
+  register: reboot_flag
+
+- name: Reiniciar de forma controlada
+  ansible.builtin.reboot:
+    reboot_timeout: 600
+  when: update_os | bool and reboot_flag.stat.exists

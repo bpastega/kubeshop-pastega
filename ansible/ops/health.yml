@@ -1,0 +1,33 @@
+# ansible/ops/health.yml — saúde da aplicação e do banco (Passo 7)
+- name: Saúde da aplicação
+  hosts: app
+  become: true
+  tasks:
+    - name: Contêineres em execução
+      ansible.builtin.command: docker ps --format '{{ "{{.Names}}: {{.Status}}" }}'
+      register: ps
+      changed_when: false
+    - name: Readiness da API (testa a conexão com o banco)
+      ansible.builtin.uri:
+        url: http://localhost/api/health/ready
+        return_content: true
+      register: ready
+    - ansible.builtin.debug:
+        msg: "{{ ps.stdout_lines + [ready.content] }}"
+
+- name: Saúde do banco
+  hosts: db
+  become: true
+  tasks:
+    - name: Ping do MongoDB
+      ansible.builtin.command: >
+        docker exec mongo mongosh --quiet --eval "db.adminCommand('ping').ok"
+      register: ping
+      changed_when: false
+      failed_when: ping.stdout | trim != '1'
+    - name: Uso do disco de dados
+      ansible.builtin.command: df -h /data
+      register: df
+      changed_when: false
+    - ansible.builtin.debug:
+        var: df.stdout_lines

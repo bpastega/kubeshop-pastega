@@ -1,0 +1,5 @@
+# ansible/roles/packages/tasks/main.yml
+- name: Instalar pacotes base e extras
+  ansible.builtin.apt:
+    name: "{{ base_packages + extra_packages }}"
+    state: present
