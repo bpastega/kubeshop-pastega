@@ -1,0 +1,83 @@
+name: ops
+on:
+  schedule:
+    - cron: "0 16 * * *"   # backup diário fora da VM: 16:00 UTC = 13:00 em Brasília (UTC-3)
+  workflow_dispatch:
+    inputs:
+      environment: { type: choice, options: [dev, homolog, prod], default: dev }
+      operation:   { type: choice, options: [backup, restore, restart, health, logs], default: health }
+      service:     { type: choice, options: [all, frontend, api, mongo], default: all }
+      backup_name: { type: string, default: "", description: "só para restore, ex.: dev/kubeshop-20261126T160000Z.archive.gz" }
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+  OPERATION: ${{ inputs.operation || 'backup' }}   # no agendamento, os inputs vêm vazios
+  SERVICE: ${{ inputs.service || 'all' }}
+  BACKUP_NAME: ${{ inputs.backup_name }}
+  ARM_USE_OIDC: "true"
+  ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+jobs:
+  ops:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment || 'dev' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/connect
+        id: conn
+        with:
+          environment: ${{ env.ENVIRONMENT }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+          tfstate-rg: ${{ vars.TFSTATE_RG }}
+          tfstate-sa: ${{ vars.TFSTATE_SA }}
+          tfstate-container: ${{ vars.TFSTATE_CONTAINER }}
+
+      - name: Backup — gerar e enviar para o Blob
+        if: env.OPERATION == 'backup'
+        working-directory: ansible
+        run: |
+          ansible-playbook ops/backup.yml
+          f=$(ls out/kubeshop-*.archive.gz)
+          az storage blob upload --auth-mode login --account-name "${{ vars.TFSTATE_SA }}" \
+            -c backups -n "$ENVIRONMENT/$(basename "$f")" -f "$f" -o none
+          echo "Backup enviado: $ENVIRONMENT/$(basename "$f")" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Restore — baixar do Blob e restaurar
+        if: env.OPERATION == 'restore'
+        working-directory: ansible
+        run: |
+          test -n "$BACKUP_NAME" || { echo "::error::informe backup_name"; exit 1; }
+          az storage blob download --auth-mode login --account-name "${{ vars.TFSTATE_SA }}" \
+            -c backups -n "$BACKUP_NAME" -f out/restore.archive.gz -o none
+          ansible-playbook ops/restore.yml
+
+      - name: Restart
+        if: env.OPERATION == 'restart'
+        working-directory: ansible
+        run: ansible-playbook ops/restart.yml -e "service=$SERVICE"
+
+      - name: Health
+        if: env.OPERATION == 'health'
+        working-directory: ansible
+        run: ansible-playbook ops/health.yml
+
+      - name: Logs
+        if: env.OPERATION == 'logs'
+        working-directory: ansible
+        run: ansible-playbook ops/logs.yml -e "service=$SERVICE"
+
+      - name: Fechar SSH temporário
+        if: always() && steps.conn.outputs.rg != ''
+        run: |
+          az network nsg rule delete -g "${{ steps.conn.outputs.rg }}" \
+            --nsg-name "${{ steps.conn.outputs.nsg }}" -n "gh-runner-${{ github.run_id }}" || true
