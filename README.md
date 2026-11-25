@@ -1,0 +1,1 @@
+# kube-shop-pastega
