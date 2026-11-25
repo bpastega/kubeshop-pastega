@@ -4,7 +4,8 @@
   become: true
   tasks:
     - name: Contêineres em execução
-      ansible.builtin.command: docker ps --format '{{ "{{.Names}}: {{.Status}}" }}'
+      # valor inteiro entre aspas: o ": " dentro do formato quebraria o YAML
+      ansible.builtin.command: "docker ps --format '{% raw %}{{.Names}}: {{.Status}}{% endraw %}'"
       register: ps
       changed_when: false
     - name: Readiness da API (testa a conexão com o banco)
