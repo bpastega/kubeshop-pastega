@@ -9,7 +9,7 @@
     username: bpastega   # dono do fork que publica as imagens
     password: "{{ registry_token }}"
   when: registry_token | length > 0
-  no_log: true
+  no_log: false   # TEMPORÁRIO: diagnóstico
 
 - name: Esperar o MongoDB responder a partir desta VM (ordem de inicialização)
   ansible.builtin.wait_for:
