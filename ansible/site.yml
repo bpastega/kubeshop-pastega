@@ -1,0 +1,14 @@
+- name: Base comum (SO, pacotes, Docker)
+  hosts: all
+  become: true
+  roles: [os_updates, packages, docker]
+
+- name: Banco de dados (VM exclusiva)
+  hosts: db
+  become: true
+  roles: [data_disk, mongodb, backup]
+
+- name: Aplicação (frontend + API)
+  hosts: app
+  become: true
+  roles: [app]
