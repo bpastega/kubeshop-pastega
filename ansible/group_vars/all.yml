@@ -7,7 +7,8 @@ update_os: false
 force_pull: false
 extra_packages_csv: ""
 
-base_packages: [ca-certificates, curl, gnupg, jq, htop, net-tools, python3-requests]
+# python3-docker: biblioteca que os módulos community.docker usam dentro das VMs
+base_packages: [ca-certificates, curl, gnupg, jq, htop, net-tools, python3-requests, python3-docker]
 extra_packages: "{{ extra_packages_csv.split(',') | map('trim') | reject('equalto', '') | list }}"
 
 frontend_image: "{{ lookup('ansible.builtin.env', 'FRONTEND_IMAGE') }}"
@@ -18,8 +19,14 @@ mongo_db: kubeshop
 mongo_app_user: kubeshop_app
 mongo_root_password: "{{ lookup('ansible.builtin.env', 'MONGO_ROOT_PASSWORD') }}"
 mongo_app_password: "{{ lookup('ansible.builtin.env', 'MONGO_APP_PASSWORD') }}"
-mongo_uri: "mongodb://{{ mongo_app_user }}:{{ mongo_app_password | urlencode }}@{{ db_private_ip }}:27017/{{ mongo_db }}?authSource={{ mongo_db }}"
-
-# variável lida por apps/backend/src/config.js (Passo 3.1)
-api_mongo_env_var: MONGODB_URI
-api_env: "{{ {api_mongo_env_var: mongo_uri, 'NODE_ENV': 'production'} }}"
+# variáveis separadas lidas por apps/backend/src/config.js (Passo 3.1).
+# A própria API monta a URI e codifica a senha. Uma URI montada aqui quebra
+# com senhas geradas em base64, que têm / + = (MongoParseError: unescaped characters).
+api_env:
+  NODE_ENV: production
+  MONGO_HOST: "{{ db_private_ip }}"
+  MONGO_PORT: "27017"
+  MONGO_DATABASE: "{{ mongo_db }}"
+  MONGO_AUTH_SOURCE: "{{ mongo_db }}"
+  MONGO_USERNAME: "{{ mongo_app_user }}"
+  MONGO_PASSWORD: "{{ mongo_app_password }}"
