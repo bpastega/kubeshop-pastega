@@ -120,7 +120,9 @@ jobs:
           APP_IP: ${{ steps.tf.outputs.app_ip }}
         run: |
           pipx install --include-deps ansible
-          mkdir -p inventory
+          mkdir -p inventory ~/.ssh
+          # registra a chave do host da VM app: sem isso, o ProxyJump até a VM db pode falhar
+          ssh-keyscan -T 10 -H "${APP_IP}" >> ~/.ssh/known_hosts
           cat > inventory/hosts.ini <<EOF
           [app]
           vm-app ansible_host=${APP_IP}
